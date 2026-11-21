@@ -49,6 +49,19 @@ function toast(msg) {
 }
 const FEEL = ['', '😫', '😕', '🙂', '😄', '🔥'];
 
+// In-page confirmation (native confirm() is blocked in some embedded viewers)
+function ask(msg, okText = 'Yes', cancelText = 'Cancel') {
+  return new Promise(resolve => {
+    const d = $('askDlg');
+    $('askMsg').textContent = msg; $('askOk').textContent = okText; $('askCancel').textContent = cancelText;
+    const done = v => { d.close(); $('askOk').onclick = $('askCancel').onclick = d.oncancel = null; resolve(v); };
+    $('askOk').onclick = () => done(true);
+    $('askCancel').onclick = () => done(false);
+    d.oncancel = e => { e.preventDefault(); done(false); };
+    d.showModal();
+  });
+}
+
 /* ---------- Audio / voice / vibration ---------- */
 let audioCtx;
 function beep(freq = 880, dur = 0.15, times = 1) {
@@ -148,7 +161,8 @@ function startGps() {
   if (!('geolocation' in navigator)) { setGps('GPS not available on this device: time only', 'warn'); return; }
   setGps('Searching for GPS…', 'warn');
   watchId = navigator.geolocation.watchPosition(onPos, err => {
-    setGps(err.code === 1 ? 'Location permission denied: time only' : 'GPS signal lost…', 'warn');
+    if (err.code === 1) { session && (session.noGps = true); setGps('No location access: timing only. You can enter the distance when you finish.', 'warn'); }
+    else setGps('GPS signal lost…', 'warn');
   }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
 }
 function stopGps() { if (watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null; }
@@ -355,6 +369,7 @@ function openRunDialog(run, manual) {
     $('dlgCancel').textContent = 'Cancel';
   } else {
     $('dlgTitle').textContent = run.planComplete ? 'Workout complete! 🎉' : 'Nice run! 👏';
+    const needDist = run.distM < 50;
     const pace = run.distM > 50 ? fmtPace(run.dur / (run.distM / unitM())) : '–';
     const splitsHtml = run.splits.length ? `<div class="splits">${run.splits.map((s, i) =>
       `<div><span>${unitShort()} ${i + 1}</span><span>${fmtPace(s)} /${unitShort()}</span></div>`).join('')}</div>` : '';
@@ -363,7 +378,9 @@ function openRunDialog(run, manual) {
       <div><b>${fmtTime(run.dur)}</b><span>time</span></div>
       <div><b>${pace}</b><span>avg pace /${unitShort()}</span></div>
       <div><b>${run.plan ? run.plan.toUpperCase().replace('D', ' D') : 'Free run'}</b><span>${run.plan ? (run.planComplete ? 'plan workout ✓' : 'not finished') : 'workout'}</span></div>
-    </div>${splitsHtml}`;
+    </div>${splitsHtml}${needDist ? `
+      <label class="col">No GPS distance recorded. How far did you go? (${unitShort()}, optional)
+      <input type="number" id="fixDist" step="0.01" min="0" inputmode="decimal" style="width:100%;text-align:left"></label>` : ''}`;
     $('dlgCancel').textContent = 'Discard';
   }
   $('dlg').showModal();
@@ -379,6 +396,8 @@ $('dlgSave').addEventListener('click', e => {
     dlgRun = { id: 'm' + Date.now(), date: new Date(date + 'T12:00:00').toISOString(), dur: Math.round(dur * 60),
       distM: Math.round(dist * unitM()), splits: [], route: [], plan: null, manual: true };
   }
+  const fix = $('fixDist');
+  if (!dlgManual && fix && parseFloat(fix.value) > 0) dlgRun.distM = Math.round(parseFloat(fix.value) * unitM());
   dlgRun.feel = dlgFeel || null;
   dlgRun.notes = $('dlgNotes').value.trim();
   const prevBest = bestStats();
@@ -388,9 +407,9 @@ $('dlgSave').addEventListener('click', e => {
   if (!dlgManual) resetRunUi();
   renderHistory();
 });
-$('dlgCancel').addEventListener('click', () => {
+$('dlgCancel').addEventListener('click', async () => {
   if (!dlgManual) {
-    if (!confirm('Discard this run? It won\'t be saved.')) { setTimeout(() => $('dlg').showModal(), 0); return; }
+    if (!(await ask('Discard this run? It won\'t be saved.', 'Discard', 'Keep it'))) { $('dlg').showModal(); return; }
     resetRunUi();
   }
 });
@@ -518,9 +537,9 @@ function drawWeekChart(vals, goal) {
   $('weekChart').innerHTML = html;
 }
 
-$('runList').addEventListener('click', e => {
+$('runList').addEventListener('click', async e => {
   const b = e.target.closest('[data-del]'); if (!b) return;
-  if (!confirm('Delete this run?')) return;
+  if (!(await ask('Delete this run?', 'Delete'))) return;
   const id = b.dataset.del;
   runs = runs.filter(r => r.id !== id); saveRuns();
   for (const k in planDone) if (planDone[k] === id) delete planDone[k];
@@ -543,10 +562,17 @@ $('setUnits').addEventListener('change', e => {
 $('setGoal').addEventListener('change', e => { settings.goal = Math.max(0, parseFloat(e.target.value) || 0); saveSettings(); });
 ['voice', 'vibrate', 'wake'].forEach(k => $('set' + k[0].toUpperCase() + k.slice(1)).addEventListener('change', e => { settings[k] = e.target.checked; saveSettings(); }));
 
-$('btnExport').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({ app: 'stride', version: 1, settings, runs, planDone }, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = `stride-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+let hostDownloads = null;
+if (window.claude && window.claude.use) window.claude.use('downloads').then(d => { hostDownloads = d; }).catch(() => {});
+$('btnExport').addEventListener('click', async () => {
+  const json = JSON.stringify({ app: 'stride', version: 1, settings, runs, planDone }, null, 2);
+  const filename = `stride-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  if (hostDownloads) {
+    try { await hostDownloads.save({ filename, data: json }); toast('Backup saved ✓'); } catch { toast('Backup not saved'); }
+    return;
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  a.download = filename; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 $('fileImport').addEventListener('change', async e => {
@@ -554,14 +580,14 @@ $('fileImport').addEventListener('change', async e => {
   try {
     const data = JSON.parse(await f.text());
     if (data.app !== 'stride' || !Array.isArray(data.runs)) throw new Error();
-    if (!confirm(`Import ${data.runs.length} runs? This replaces your current data.`)) return;
+    if (!(await ask(`Import ${data.runs.length} runs? This replaces your current data.`, 'Import'))) return;
     runs = data.runs; planDone = data.planDone || {}; Object.assign(settings, data.settings || {});
     saveRuns(); savePlan(); saveSettings(); loadSettingsUi(); updatePlanButton(); toast('Backup restored ✓');
   } catch { toast('That doesn\'t look like a Stride backup'); }
   e.target.value = '';
 });
-$('btnReset').addEventListener('click', () => {
-  if (!confirm('Delete ALL runs and plan progress? This cannot be undone.')) return;
+$('btnReset').addEventListener('click', async () => {
+  if (!(await ask('Delete ALL runs and plan progress? This cannot be undone.', 'Delete everything'))) return;
   runs = []; planDone = {}; saveRuns(); savePlan(); updatePlanButton(); toast('All data deleted');
 });
 
@@ -572,7 +598,7 @@ $('btnStartPlan').addEventListener('click', () => {
   startRun({ week: n.week, day: n.day, segments: PLAN[n.week - 1].workouts[n.day - 1] });
 });
 $('btnPause').addEventListener('click', togglePause);
-$('btnStop').addEventListener('click', () => { if (confirm('Finish this run?')) finishRun(); });
+$('btnStop').addEventListener('click', async () => { if (await ask('Finish this run?', 'Finish', 'Keep going')) finishRun(); });
 window.addEventListener('beforeunload', e => { if (session) { session.savedAt = Date.now(); LS.set('active', session); e.preventDefault(); e.returnValue = ''; } });
 
 /* ---------- Boot ---------- */
@@ -584,7 +610,7 @@ drawRoute($('routeSvg'), []);
 const saved = LS.get('active', null);
 if (saved && saved.startedAt) {
   if (!saved.paused) { saved.accMs += Math.max(0, (saved.savedAt || saved.resumedAt) - saved.resumedAt); saved.paused = true; }
-  if (confirm('You have an unfinished run. Continue it? (Cancel saves it as it is)')) {
+  ask('You have an unfinished run. Continue it?', 'Continue run', 'Save it as is').then(cont => { if (cont) {
     session = saved; session.last = null;
     startGps(); tickTimer = setInterval(tick, 500);
     $('controlsIdle').classList.add('hidden'); $('controlsActive').classList.remove('hidden');
@@ -593,7 +619,7 @@ if (saved && saved.startedAt) {
     tick(); toast('Run restored (paused). Tap Resume.');
   } else {
     session = saved; finishRun();
-  }
+  } });
 }
 
 if ('serviceWorker' in navigator) {

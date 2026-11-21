@@ -160,3 +160,5 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
   opacity: 0; pointer-events: none; transition: all .25s; z-index: 20; max-width: 90vw; text-align: center;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+#askDlg p { font-size: 17px; line-height: 1.4; margin: 4px 0 8px; }
