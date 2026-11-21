@@ -1,0 +1,14 @@
+{
+  "name": "Stride – Running Companion",
+  "short_name": "Stride",
+  "description": "Track your runs, follow a Couch-to-5K plan and watch your progress.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
