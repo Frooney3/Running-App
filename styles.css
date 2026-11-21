@@ -162,3 +162,48 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 #askDlg p { font-size: 17px; line-height: 1.4; margin: 4px 0 8px; }
+
+/* Personal plan */
+.eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.goal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.small-btn { width: auto; padding: 8px 14px; font-size: 14px; border-radius: 10px; }
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.facts div { background: var(--card2); border-radius: 12px; padding: 8px 10px; }
+.facts span { display: block; font-size: 11px; color: var(--muted); }
+.facts b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.next-card { border: 1.5px solid rgba(255,90,54,.45); }
+.next-card h2 { margin-top: 2px; }
+.seg-strip { display: flex; height: 10px; border-radius: 5px; overflow: hidden; gap: 2px; margin: 12px 0 14px; }
+.seg-strip i { display: block; min-width: 2px; background: var(--walk); }
+.seg-strip i.run { background: var(--accent); }
+.seg-strip i.easy { background: var(--good); }
+.adapt-log div { font-size: 14px; padding: 8px 0; border-top: 1px solid var(--card2); line-height: 1.4; }
+.adapt-log div:first-child { border-top: 0; }
+.adapt-log span { display: block; font-size: 11px; color: var(--muted); }
+details.week summary { list-style: none; cursor: pointer; }
+details.week summary::-webkit-details-marker { display: none; }
+details.week summary h3::before { content: '▸ '; color: var(--muted); }
+details.week[open] summary h3::before { content: '▾ '; }
+.banner.easy { background: linear-gradient(135deg, #1f9e68, var(--good)); }
+.hero-card .tips { margin-top: 10px; }
+
+/* Wizard */
+dialog.wiz { width: min(94vw, 460px); }
+.steps { display: flex; gap: 6px; margin-bottom: 14px; }
+.steps i { flex: 1; height: 4px; border-radius: 2px; background: var(--card2); }
+.steps i.on { background: var(--accent); }
+.q { font-size: 14px; font-weight: 600; margin: 14px 0 8px; }
+.choices { display: grid; gap: 8px; }
+.choice { display: flex; gap: 12px; align-items: center; background: var(--card2); border-radius: 12px; padding: 12px; cursor: pointer; border: 1.5px solid transparent; }
+.choice.compact { padding: 10px 12px; }
+.choice:has(input:checked) { border-color: var(--accent); }
+.choice input { accent-color: var(--accent); width: 18px; height: 18px; flex: none; }
+.choice b { display: block; font-size: 15px; }
+.choice small { color: var(--muted); font-size: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip input { position: absolute; opacity: 0; pointer-events: none; }
+.chip span { display: inline-block; min-width: 44px; text-align: center; padding: 10px 12px; border-radius: 10px; background: var(--card2); cursor: pointer; font-weight: 600; border: 1.5px solid transparent; }
+.chip input:checked + span { background: var(--accent); color: #fff; }
+.chip input:focus-visible + span { border-color: #fff; }
+.inline { display: flex; gap: 8px; }
+.inline select, .inline input { flex: 1; min-width: 0; }

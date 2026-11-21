@@ -5,7 +5,11 @@ An installable web app (PWA) that helps you on your running journey. No app stor
 ## Features
 - **GPS run tracking:** distance, time, live pace, average pace and a route map
 - **Voice updates:** spoken splits every km or mile
-- **Couch-to-5K plan:** 9 weeks of guided run/walk intervals with voice, beep and vibration prompts
+- **Personal adaptive plan:** answer a few questions (goal, current fitness, days you can run, race date) and get a plan built for you:
+  - Goals: start running (0 → 5K), faster 5K, 10K, half marathon, marathon, or general fitness
+  - Beginners get a guided run/walk programme; experienced runners get easy, tempo, interval and long runs with cut-back weeks and a taper
+  - Target paces come from a recent race time, or are estimated from your GPS runs
+  - It adapts: tough or unfinished runs ease upcoming sessions, strong runs nudge them up, breaks ease you back in, and paces update as you get fitter
 - **Progress:** total distance, best pace, longest run, weekly goal, 8-week chart, weekly streak
 - **Run log:** how each run felt, notes, and manual entries for treadmill runs
 - **Settings:** km or miles, keep the screen awake while running, backup export and import

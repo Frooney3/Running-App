@@ -8,7 +8,7 @@ root = pathlib.Path(__file__).parent
 html = (root / 'index.html').read_text()
 body = re.search(r'<body>(.*?)\s*<script src="plan.js">', html, re.S).group(1)
 css = (root / 'styles.css').read_text()
-plan = (root / 'plan.js').read_text()
+plan = (root / 'plan.js').read_text() + '\n' + (root / 'planner.js').read_text()
 app = (root / 'app.js').read_text()
 
 out = f"""<title>Stride</title>

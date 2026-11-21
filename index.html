@@ -54,13 +54,7 @@
 
     <!-- PLAN -->
     <section id="view-plan" class="view">
-      <div class="card">
-        <h2>Couch to 5K</h2>
-        <p class="muted">Nine weeks, three runs a week. Go from walking to running 30 minutes non-stop. Leave a rest day between workouts.</p>
-        <div class="progress-wrap"><div class="progress" id="planProgress"></div></div>
-        <p class="muted small" id="planProgressText"></p>
-      </div>
-      <div id="planList"></div>
+      <div id="planRoot"></div>
     </section>
 
     <!-- HISTORY -->
@@ -155,6 +149,14 @@
     </form>
   </dialog>
 
+  <dialog id="planDlg" class="wiz">
+    <div id="planDlgBody"></div>
+    <div class="btn-row">
+      <button class="btn ghost" id="wizBack" type="button">Cancel</button>
+      <button class="btn primary" id="wizNext" type="button">Next</button>
+    </div>
+  </dialog>
+
   <dialog id="askDlg">
     <p id="askMsg"></p>
     <div class="btn-row">
@@ -166,6 +168,7 @@
   <div id="toast" class="toast"></div>
 
   <script src="plan.js"></script>
+  <script src="planner.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
