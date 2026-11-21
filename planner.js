@@ -68,7 +68,10 @@
   }
 
   function freshAdapt(prevAdapt, profile, planDone) {
-    const a = { load: 1, log: (prevAdapt && prevAdapt.log) || [], struggles: 0, breakFor: prevAdapt ? prevAdapt.breakFor : null, bWeek: 1 };
+    const a = { load: 1, log: (prevAdapt && prevAdapt.log) || [], struggles: 0, breakFor: prevAdapt ? prevAdapt.breakFor : null, bWeek: 1,
+      moves: {}, fitHist: (prevAdapt && prevAdapt.fitHist) || [] };
+    const t5 = fiveK(profile);
+    if (t5 && !a.fitHist.some(h => Math.round(h.t5) === Math.round(t5))) a.fitHist.push({ date: ymd(new Date()), t5: Math.round(t5) });
     if (profile.phase === 'beginner') {
       // Keep existing run/walk progress
       const startWeek = profile.continuous >= 10 ? 5 : profile.continuous >= 3 ? 3 : 1;
@@ -129,6 +132,14 @@
     }));
     const cur = Math.min(adapt.bWeek, PLAN.length);
     const graduated = adapt.bWeek > PLAN.length;
+    // Suggested dates for the current week: upcoming preferred days from today
+    if (!graduated) {
+      const todayS = ymd(new Date()), pref = assignDays(profile.prefDays, idx.length);
+      let cand = [];
+      for (let i = 0; i < 14 && cand.length < 7; i++) { const d = addDays(todayS, i); if (pref.includes((parse(d).getDay() + 6) % 7)) cand.push(d); }
+      weeks[cur - 1].workouts.forEach(w => { if (!planDone[w.key]) w.date = cand.shift() || todayS; });
+      applyMoves(weeks[cur - 1].workouts, adapt);
+    }
     const next = graduated ? null : weeks[cur - 1].workouts.find(w => !planDone[w.key]) || null;
     return { phase: 'beginner', weeks, current: cur - 1, total: weeks.length, next, graduated };
   }
@@ -146,6 +157,9 @@
     const build = Math.max(1, N - taper);
     const pace = paces(profile);
     const load = adapt.load;
+    const mid = t => pace && pace[t] ? (pace[t][0] + pace[t][1]) / 2 : null;
+    // minutes at a given effort -> km rounded to 0.5 (only when paces are known)
+    const toKm = (min, t, lo = 1) => Math.max(lo, Math.round(min * 60 / mid(t) * 2) / 2);
 
     const longBase = [];
     for (let w = 0; w < build; w++) {
@@ -205,6 +219,7 @@
       if (raceWeek) { // keep other runs before race day
         list.forEach(wo => { if (wo.kind !== 'race' && wo.date >= profile.raceDate) wo.date = addDays(profile.raceDate, -2); });
       }
+      applyMoves(wl, adapt);
       const tags = [];
       if (w % 4 === 3 && w < build - 1) tags.push('Cut-back week: a little lighter so your body can absorb the training.');
       if (taperWeek && !raceWeek) tags.push('Taper: less running so you arrive fresh.');
@@ -221,12 +236,14 @@
 
     /* builders */
     function easyRun(m, extra) {
-      return { kind: 'easy', title: `Easy run · ${minTxt(m)}`, segments: [['easy', m * 60]],
-        desc: extra || `Keep it ${EFFORT.easy}. Easy running builds your engine.` };
+      const desc = extra || `Keep it ${EFFORT.easy}. Easy running builds your engine.`;
+      if (pace) { const km = toKm(m, 'easy', 2); return { kind: 'easy', title: `Easy run · ${km} km`, segments: [['easy', km * 1000, 'm']], desc }; }
+      return { kind: 'easy', title: `Easy run · ${minTxt(m)}`, segments: [['easy', m * 60]], desc };
     }
     function longRun(m) {
-      return { kind: 'long', title: `Long run · ${minTxt(m)}`, segments: [['long', m * 60]],
-        desc: `Your key run of the week. Keep it ${EFFORT.long}. Walk breaks are fine.` };
+      const desc = `Your key run of the week. Keep it ${EFFORT.long}. Walk breaks are fine.`;
+      if (pace) { const km = toKm(m, 'long', 3); return { kind: 'long', title: `Long run · ${km} km`, segments: [['long', km * 1000, 'm']], desc }; }
+      return { kind: 'long', title: `Long run · ${minTxt(m)}`, segments: [['long', m * 60]], desc };
     }
     function sharpener() {
       return { kind: 'sharpener', title: 'Race-week sharpener', desc: 'Short, with a few strides at race pace to stay sharp.',
@@ -237,23 +254,32 @@
       const raceSec = Math.round(pred || g.dist * 7 * 60);
       return { kind: 'race', title: `Race day: ${RACE_LABEL[p.goal] || 'goal run'}!`,
         desc: pred ? `Predicted finish around ${mmss(pred)}. Start steady and finish strong.` : 'Start steady, enjoy it, finish strong.',
-        segments: [['jogwarm', 600], ['race', raceSec], ['jogcool', 300]] };
+        segments: [['jogwarm', 600], ['race', Math.round(g.dist * 1000), 'm'], ['jogcool', 300]], estRace: raceSec };
     }
     function quality(type, w, f, p) {
       if (type === 'tempo') {
         const T = Math.round(clamp(10 + w * 1.5, 10, p.goal === '5k' || p.goal === 'fitness' || p.goal === 'start' ? 20 : 30) * f);
-        return { kind: 'tempo', title: `Tempo run · ${T} min tempo`, desc: `After a warm-up, hold a ${EFFORT.tempo} pace.`,
+        const desc = `After a warm-up, hold a ${EFFORT.tempo} pace.`;
+        if (pace) { const km = toKm(Math.max(5, T), 'tempo', 1.5); return { kind: 'tempo', title: `Tempo · ${km} km`, desc, segments: [['jogwarm', 600], ['tempo', km * 1000, 'm'], ['jogcool', 600]] }; }
+        return { kind: 'tempo', title: `Tempo run · ${T} min tempo`, desc,
           segments: [['jogwarm', 600], ['tempo', Math.max(5, T) * 60], ['jogcool', 600]] };
       }
       if (type === 'intervals') {
         const n = Math.max(3, Math.round(clamp(4 + Math.floor(w / 2), 4, 8) * f));
         const rep = p.goal === '10k' ? 240 : 180;
+        if (pace) {
+          const repM = p.goal === '10k' || p.goal === 'half' ? 1000 : 800, rec = repM === 800 ? 90 : 120;
+          const core = repeat(n, [['fast', repM, 'm'], ['recover', rec]]); core.pop();
+          return { kind: 'intervals', title: `Intervals · ${n} × ${repM} m`, desc: `Fast reps: ${EFFORT.fast}. ${rec === 120 ? '2 min' : '90 s'} easy jog between reps.`,
+            segments: [['jogwarm', 600], ...core, ['jogcool', 600]] };
+        }
         const core = repeat(n, [['fast', rep], ['recover', 120]]); core.pop();
         return { kind: 'intervals', title: `Intervals · ${n} × ${rep / 60} min`, desc: `Fast reps: ${EFFORT.fast}. Jog slowly in between.`,
           segments: [['jogwarm', 600], ...core, ['jogcool', 600]] };
       }
       if (type === 'steady') {
         const M = Math.round(clamp(15 + 3 * w, 15, p.goal === 'half' ? 40 : 60) * f);
+        if (pace) { const km = toKm(Math.max(10, M), 'steady', 2); return { kind: 'steady', title: `Race-pace run · ${km} km`, desc: `Practise ${EFFORT.steady}. It should feel controlled.`, segments: [['jogwarm', 600], ['steady', km * 1000, 'm'], ['jogcool', 600]] }; }
         return { kind: 'steady', title: `Race-pace run · ${M} min`, desc: `Practise ${EFFORT.steady}. It should feel controlled.`,
           segments: [['jogwarm', 600], ['steady', Math.max(10, M) * 60], ['jogcool', 600]] };
       }
@@ -262,6 +288,30 @@
       return { kind: 'fartlek', title: `Fartlek · ${n} × 1 min faster`, desc: 'Playful speed: 1 minute quicker, 2 minutes easy.',
         segments: [['jogwarm', 600], ...core, ['jogcool', 300]] };
     }
+  }
+
+  function applyMoves(list, adapt) {
+    const mv = adapt.moves || {};
+    list.forEach(wo => { if (mv[wo.key]) wo.date = mv[wo.key]; });
+    list.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  }
+
+  /* ---------- workout estimates ---------- */
+  const DEFAULT_PACE = { easy: 420, long: 430, recover: 540, tempo: 360, fast: 330, steady: 380, race: 360, run: 450,
+    walk: 720, warmup: 720, cooldown: 720, jogwarm: 440, jogcool: 450 };
+  const INTENSITY = { walk: 1, warmup: 1, cooldown: 1, recover: 1, jogwarm: 2, jogcool: 2, easy: 2, long: 2, run: 2, steady: 3, tempo: 4, fast: 5, race: 5 };
+  function paceFor(type, profile) {
+    const p = profile && paces(profile);
+    return p && p[type] ? (p[type][0] + p[type][1]) / 2 : DEFAULT_PACE[type] || 450;
+  }
+  // [type, amount, unit] -> {type, amt, unit, sec, m}
+  function seg(s, profile) {
+    const type = s[0], unit = s[2] || 's', amt = s[1], pk = paceFor(type, profile);
+    return unit === 'm' ? { type, amt, unit, m: amt, sec: amt / 1000 * pk } : { type, amt, unit, sec: amt, m: amt / pk * 1000 };
+  }
+  function summary(wo, profile) {
+    const segs = wo.segments.map(s => seg(s, profile));
+    return { sec: segs.reduce((a, s) => a + s.sec, 0), m: segs.reduce((a, s) => a + s.m, 0), segs };
   }
 
   function weekTip(w, build) {
@@ -374,6 +424,7 @@
     if (run.dur / 60 > profile.continuous && run.planComplete !== false) profile.continuous = Math.round(run.dur / 60);
     if (cur && est >= cur * 0.98) return null;
     profile.recent = { distKm: +(run.distM / 1000).toFixed(2), sec: run.dur, auto: true };
+    (adapt.fitHist = adapt.fitHist || []).push({ date: ymd(today), t5: Math.round(est) });
     return log(adapt, cur ? `Fitness up! Your estimated 5K is now ${mmss(est)}. Paces updated.`
       : `Estimated your 5K at about ${mmss(est)} from this run. Target paces added.`, today);
   }
@@ -425,6 +476,6 @@
     return lines;
   }
 
-  root.Planner = { GOALS, DAY_NAMES, createProfile, freshAdapt, build, afterRun, updateFitness, checkBreak, preview, paces, fiveK, predictedRace, EFFORT, mmss, ymd };
+  root.Planner = { INTENSITY, seg, summary, paceFor, riegel, mondayOf, addDays, GOALS, DAY_NAMES, createProfile, freshAdapt, build, afterRun, updateFitness, checkBreak, preview, paces, fiveK, predictedRace, EFFORT, mmss, ymd };
   if (typeof module !== 'undefined') module.exports = root.Planner;
 })(typeof window !== 'undefined' ? window : globalThis);

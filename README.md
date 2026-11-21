@@ -14,6 +14,14 @@ An installable web app (PWA) that helps you on your running journey. No app stor
 - **Run log:** how each run felt, notes, and manual entries for treadmill runs
 - **Settings:** km or miles, keep the screen awake while running, backup export and import
 
+### Guided training
+- **This week view:** a day-by-day strip of your plan; tap a day to see that workout
+- **Structured workouts:** distance-based reps (e.g. 4 × 1000 m), tempo and long runs, each with target paces and an intensity chart
+- **Step-by-step guidance:** the run screen counts down each step's distance or time, announces "Rep 2 of 4", and coaches you live ("speed up a little", "right on pace")
+- **Workout analysis:** after the run, each step's pace is compared to its target
+- **Move or skip** any workout within its week
+- **Race prediction** that updates as you get fitter
+
 ## Get it on your phone
 1. Host the folder over HTTPS. The easiest way is GitHub Pages: repo **Settings → Pages → Deploy from branch**, then choose the branch and `/ (root)`.
 2. Open the Pages URL on your phone.

@@ -103,6 +103,7 @@ function showView(v) {
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === v));
   $('screenTitle').textContent = TITLES[v];
   if (v === 'plan') renderPlan();
+  if (v === 'run') renderHome();
   if (v === 'history') renderHistory();
   window.scrollTo(0, 0);
 }
@@ -133,7 +134,12 @@ function newSession(workout) {
   return {
     startedAt: Date.now(), accMs: 0, resumedAt: Date.now(), paused: false,
     points: [], distM: 0, last: null, splits: [], nextSplit: unitM(), lastSplitSec: 0,
-    workout: workout || null, segIdx: -1, workoutDone: false
+    workout: workout || null, workoutDone: false,
+    segs: workout ? workout.segments.map(x => {
+      const g = Planner.seg(x, profile); const p = profile && Planner.paces(profile);
+      g.tgt = p && p[g.type] && g.type !== 'recover' ? p[g.type].map(Math.round) : null; return g;
+    }) : null,
+    seg: { idx: 0, t0: 0, d0: 0, cued: -1, flags: {} }, steps: []
   };
 }
 function elapsedSec() {
@@ -150,6 +156,7 @@ function startRun(workout) {
   tickTimer = setInterval(tick, 500);
   $('controlsIdle').classList.add('hidden');
   $('controlsActive').classList.remove('hidden');
+  $('liveStats').classList.remove('hidden');
   $('btnPause').textContent = 'Pause';
   $('workoutBanner').classList.toggle('hidden', !workout);
   if (!workout) say('Run started. Have a great run.');
@@ -205,16 +212,6 @@ function speakTime(sec) {
   return [h && `${h} hour${h > 1 ? 's' : ''}`, m && `${m} minute${m > 1 ? 's' : ''}`, `${s} seconds`].filter(Boolean).join(' ');
 }
 
-function currentSeg() {
-  const segs = session.workout.segments, e = elapsedSec();
-  let acc = 0;
-  for (let i = 0; i < segs.length; i++) {
-    if (e < acc + segs[i][1]) return { idx: i, type: segs[i][0], left: acc + segs[i][1] - e, len: segs[i][1] };
-    acc += segs[i][1];
-  }
-  return { idx: segs.length, type: 'done', left: 0, len: 1 };
-}
-
 function currentPace() {
   const pts = session.points;
   if (pts.length < 2) return NaN;
@@ -239,54 +236,125 @@ function tick() {
 }
 
 function tickWorkout() {
-  const w = session.workout, seg = currentSeg(), segs = w.segments;
-  const banner = $('workoutBanner');
-  if (seg.idx !== session.segIdx) {
-    session.segIdx = seg.idx;
-    if (seg.type === 'done') {
+  const w = session.workout, segs = session.segs, e = elapsedSec(), d = session.distM;
+  const gpsOff = session.noGps || (e > 60 && session.points.length < 2);
+  const st = session.seg;
+  const timeMode = s => s.unit === 's' || gpsOff;
+  const segDone = s => timeMode(s) ? e - st.t0 >= (s.unit === 's' ? s.amt : s.sec) : d - st.d0 >= s.amt;
+
+  // Advance through finished steps (and record actual results)
+  while (st.idx < segs.length && segDone(segs[st.idx])) {
+    const s = segs[st.idx];
+    session.steps.push({ type: s.type, unit: s.unit, amt: s.amt, sec: Math.round(e - st.t0), m: Math.round(d - st.d0), tgt: s.tgt, gps: !gpsOff });
+    st.idx++; st.t0 = e; st.d0 = d; st.flags = {};
+  }
+
+  // Cue the step we're on
+  if (st.cued !== st.idx) {
+    st.cued = st.idx;
+    if (st.idx >= segs.length) {
       if (!session.workoutDone) {
         session.workoutDone = true;
         say('Workout complete! Brilliant job. Press finish to save your run.');
         beep(1046, 0.2, 3); buzz([300, 100, 300, 100, 600]);
       }
     } else {
-      const s = segs[seg.idx], d = fmtDur(s[1]);
+      const s = segs[st.idx], a = amountWords(s);
       const CUE = {
-        run: `Start running for ${d}.`, walk: `Walk for ${d}.`, warmup: `Begin with a ${d} brisk warm-up walk.`,
-        cooldown: `Great work! Cool down with a ${d} walk.`, easy: `Easy running for ${d}.`,
-        long: `Long run, ${d}. Settle into a relaxed pace.`, tempo: `Tempo for ${d}. Comfortably hard.`,
-        fast: `Go! Fast for ${d}.`, recover: `Recover. Easy jog for ${d}.`, steady: `Race pace for ${d}.`,
-        race: `Race pace for ${d}.`, jogwarm: `Warm up with an easy jog for ${d}.`, jogcool: `Nice work! Cool down with an easy jog for ${d}.`
+        run: `Start running for ${a}.`, walk: `Walk for ${a}.`, warmup: `Begin with a ${a} brisk warm-up walk.`,
+        cooldown: `Great work! Cool down with a ${a} walk.`, easy: `Easy running for ${a}.`,
+        long: `Long run, ${a}. Settle into a relaxed pace.`, tempo: `Tempo for ${a}. Comfortably hard.`,
+        fast: `Go! Fast for ${a}.`, recover: `Recover. Easy jog for ${a}.`, steady: `Race pace for ${a}.`,
+        race: `Race pace for ${a}.`, jogwarm: `Warm up with an easy jog for ${a}.`, jogcool: `Nice work! Cool down with an easy jog for ${a}.`
       };
-      const msg = (seg.idx === 0 ? `${w.title}. ` : '') + (CUE[s[0]] || `${SEG_NAME[s[0]]} for ${d}.`) + spokenPace(s[0]);
-      const hard = BANNER_CLASS[s[0]] === 'run';
-      if (seg.idx > 0) { beep(hard ? 1046 : 660, 0.18, 2); buzz(hard ? [400, 150, 400] : [600]); }
+      const rep = repLabel(st.idx);
+      const msg = (st.idx === 0 ? `${w.title}. ` : '') + (rep ? `${rep}. ` : '') + (CUE[s.type] || `${SEG_NAME[s.type]} for ${a}.`) + spokenPace(s.type);
+      const hard = BANNER_CLASS[s.type] === 'run';
+      if (st.idx > 0) { beep(hard ? 1046 : 660, 0.18, 2); buzz(hard ? [400, 150, 400] : [600]); }
       say(msg);
+      session.lastCoach = e;
     }
   }
-  // Halfway cue for long runs
-  if (['run', 'long', 'tempo', 'steady', 'easy'].includes(seg.type) && seg.len >= 600 && !session['half' + seg.idx] && seg.left <= seg.len / 2) {
-    session['half' + seg.idx] = true; say('Halfway there. Keep it up!');
-  }
-  // Countdown beeps for the last 3 seconds of a segment
-  const leftInt = Math.ceil(seg.left);
-  if (seg.type !== 'done' && leftInt <= 3 && leftInt >= 1 && session.lastCount !== `${seg.idx}-${leftInt}`) {
-    session.lastCount = `${seg.idx}-${leftInt}`; beep(520, 0.08, 1);
-  }
-  banner.className = 'banner ' + (seg.type === 'done' ? 'done' : BANNER_CLASS[seg.type] || 'walk');
-  if (seg.type === 'done') {
+
+  const banner = $('workoutBanner');
+  if (st.idx >= segs.length) {
+    banner.className = 'banner done';
     $('segLabel').textContent = 'Workout complete 🎉';
-    $('segTime').textContent = fmtTime(elapsedSec());
+    $('segTime').textContent = fmtTime(e);
     $('segNext').textContent = 'Tap Finish to save';
     $('segProgress').style.width = '100%';
-  } else {
-    $('segLabel').textContent = `${SEG_NAME[seg.type]} · ${w.short || ''}`;
-    $('segTime').textContent = fmtTime(seg.left);
-    $('segProgress').style.width = (100 * (1 - seg.left / seg.len)).toFixed(1) + '%';
-    const nx = segs[seg.idx + 1];
-    const tgt = paceRange(seg.type);
-    $('segNext').textContent = (tgt ? `Target ${tgt} · ` : '') + (nx ? `Next: ${SEG_NAME[nx[0]]} ${fmtTime(nx[1])}` : 'Last one!');
+    $('segPace').className = 'pace-chip hidden';
+    return;
   }
+
+  const s = segs[st.idx], tm = timeMode(s);
+  const total = tm ? (s.unit === 's' ? s.amt : s.sec) : s.amt;
+  const doneAmt = tm ? e - st.t0 : d - st.d0;
+  const left = Math.max(0, total - doneAmt), frac = Math.min(1, doneAmt / total);
+
+  // Halfway + closing cues
+  st.flags = st.flags || {};
+  if (['run', 'long', 'tempo', 'steady', 'easy'].includes(s.type) && s.sec >= 600 && !st.flags.half && frac >= 0.5) { st.flags.half = 1; say('Halfway there. Keep it up!'); }
+  if (tm) {
+    const li = Math.ceil(left);
+    if (li <= 3 && li >= 1 && st.flags.count !== li) { st.flags.count = li; beep(520, 0.08, 1); }
+  } else if (s.amt >= 400 && left <= 100 && !st.flags.last100) { st.flags.last100 = 1; say('100 metres to go.'); beep(520, 0.08, 2); }
+
+  // Live pace coaching (needs GPS and a target)
+  const chip = $('segPace');
+  const now = currentPace() * 1000 / unitM(); // sec per km
+  if (s.tgt && !gpsOff && isFinite(now)) {
+    const [fast, slow] = s.tgt, k = unitM() / 1000;
+    const state = now > slow * 1.03 ? 'slow' : now < fast * 0.97 ? 'fast' : 'on';
+    chip.className = 'pace-chip ' + state;
+    chip.textContent = `${fmtPace(now * k)} /${unitShort()} · ${state === 'on' ? 'on target ✓' : state === 'slow' ? 'speed up ↑' : 'ease off ↓'}`;
+    if (e - st.t0 > 25 && e - (session.lastCoach || 0) > 45) {
+      const target = `${speakPace((fast + slow) / 2)}`;
+      if (state === 'slow') { say(`Speed up a little. You're at ${speakPace(now)}. Aim for ${target}.`); session.lastCoach = e; }
+      else if (state === 'fast') { say(`Ease off a little. You're at ${speakPace(now)}. Aim for ${target}.`); session.lastCoach = e; }
+      else if (e - (session.lastOn || 0) > 240) { say('Right on pace. Nice work.'); session.lastCoach = e; session.lastOn = e; }
+    }
+  } else if (s.tgt) {
+    chip.className = 'pace-chip';
+    chip.textContent = gpsOff ? 'Target pace shown below · no GPS' : 'Finding your pace…';
+  } else chip.className = 'pace-chip hidden';
+
+  banner.className = 'banner ' + (BANNER_CLASS[s.type] || 'walk');
+  const rep = repLabel(st.idx);
+  $('segLabel').textContent = `${SEG_NAME[s.type]}${rep ? ' · ' + rep : ''} · ${st.idx + 1}/${segs.length}`;
+  $('segTime').textContent = tm ? fmtTime(left) : fmtLeftDist(left);
+  $('segProgress').style.width = (100 * frac).toFixed(1) + '%';
+  const nx = segs[st.idx + 1];
+  const tgt = paceRange(s.type);
+  $('segNext').textContent = (tgt ? `Target ${tgt} · ` : '') + (nx ? `Next: ${SEG_NAME[nx.type]} ${amountShort(nx)}` : 'Last one!');
+}
+
+// "Rep 3 of 6" for repeated hard steps
+function repLabel(i) {
+  const segs = session.segs, s = segs[i];
+  if (!s || BANNER_CLASS[s.type] !== 'run') return '';
+  const same = segs.map((x, j) => [x, j]).filter(([x]) => x.type === s.type && x.amt === s.amt && x.unit === s.unit);
+  if (same.length < 2) return '';
+  return `Rep ${same.findIndex(([, j]) => j === i) + 1} of ${same.length}`;
+}
+function amountWords(s) {
+  if (s.unit === 's') return fmtDur(s.amt);
+  if (s.amt < 1000) return `${s.amt} metres`;
+  if (settings.units === 'mi') return `${(s.amt / 1609.344).toFixed(1)} miles`;
+  const km = s.amt / 1000; return `${+km.toFixed(2)} kilometre${km === 1 ? '' : 's'}`;
+}
+function amountShort(s) {
+  if ((s.unit || 's') === 's') return fmtTime(s.amt);
+  if (s.amt < 1000) return `${s.amt} m`;
+  return `${+(s.amt / unitM()).toFixed(2)} ${unitShort()}`;
+}
+function fmtLeftDist(m) {
+  if (m < 1000) return `${Math.ceil(m / 10) * 10} m`;
+  return `${(m / unitM()).toFixed(2)} ${unitShort()}`;
+}
+function speakPace(secPerKm) {
+  const sec = Math.round(secPerKm * unitM() / 1000);
+  return `${Math.floor(sec / 60)} ${pad(sec % 60)}`;
 }
 
 function togglePause() {
@@ -309,11 +377,17 @@ function finishRun() {
   try { speechSynthesis.cancel(); } catch {}
   const s = session;
   if (dur < 10 && s.distM < 20) { resetRunUi(); toast('Run too short: not saved'); return; }
+  if (s.segs && s.seg.idx < s.segs.length) { // record the step you stopped in
+    const g = s.segs[s.seg.idx], t = dur - s.seg.t0;
+    if (t >= 10) s.steps.push({ type: g.type, unit: g.unit, amt: g.amt, sec: Math.round(t), m: Math.round(s.distM - s.seg.d0), tgt: g.tgt, gps: !s.noGps && s.points.length > 1, partial: true });
+  }
   const run = {
     id: 'r' + s.startedAt, date: new Date(s.startedAt).toISOString(), dur, distM: Math.round(s.distM),
     splits: s.splits, route: simplify(s.points.map(p => [+p[0].toFixed(5), +p[1].toFixed(5)]), 400),
     plan: s.workout ? s.workout.key : null, planTitle: s.workout ? s.workout.title : null,
-    planComplete: s.workout ? s.workoutDone : false
+    // Done if every step is finished, or only the cool-down was cut short
+    planComplete: s.workout ? (s.workoutDone || (s.seg.idx === s.segs.length - 1 && ['jogcool', 'cooldown'].includes(s.segs[s.seg.idx].type))) : false,
+    steps: s.steps && s.steps.length ? s.steps : undefined
   };
   openRunDialog(run, false);
 }
@@ -323,12 +397,14 @@ function resetRunUi() {
   $('controlsIdle').classList.remove('hidden');
   $('controlsActive').classList.add('hidden');
   $('workoutBanner').classList.add('hidden');
+  $('liveStats').classList.add('hidden');
   $('statDistance').textContent = fmtDist(0);
   $('statTime').textContent = '0:00';
   $('statPace').textContent = '–'; $('statAvg').textContent = '–';
   drawRoute($('routeSvg'), []);
   setGps('GPS idle');
   updatePlanButton();
+  renderHome();
 }
 
 // Keep the route light for storage: sample down to max N points
@@ -384,7 +460,7 @@ function openRunDialog(run, manual) {
       <div><b>${fmtTime(run.dur)}</b><span>time</span></div>
       <div><b>${pace}</b><span>avg pace /${unitShort()}</span></div>
       <div><b style="font-size:15px">${run.plan ? escapeHtml(run.planTitle || 'Plan workout') : 'Free run'}</b><span>${run.plan ? (run.planComplete ? 'plan workout ✓' : 'stopped early') : 'workout'}</span></div>
-    </div>${splitsHtml}${needDist ? `
+    </div>${splitsHtml}${analysisHtml(run.steps)}${needDist ? `
       <label class="col">No GPS distance recorded. How far did you go? (${unitShort()}, optional)
       <input type="number" id="fixDist" step="0.01" min="0" inputmode="decimal" style="width:100%;text-align:left"></label>` : ''}`;
     $('dlgCancel').textContent = 'Discard';
@@ -417,7 +493,7 @@ $('dlgSave').addEventListener('click', e => {
   savePlan();
   if (msgs.length) toast(msgs.join(' '), 6000); else celebrate(dlgRun, prevBest);
   if (!dlgManual) resetRunUi();
-  renderHistory();
+  renderHistory(); renderHome();
 });
 $('dlgCancel').addEventListener('click', async () => {
   if (!dlgManual) {
@@ -446,12 +522,12 @@ function celebrate(run, prev) {
 const shortDate = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }); };
 
 function workoutRow(wo, isNext) {
-  const isDone = !!planDone[wo.key];
+  const isDone = !!planDone[wo.key] && planDone[wo.key] !== 'skip';
   const when = wo.date ? `${shortDate(wo.date)} · ` : '';
   return `<div class="day ${isDone ? 'done' : ''}">
     <button class="check" data-toggle="${wo.key}" aria-label="Mark done">${isDone ? '✓' : ''}</button>
     <div class="desc">${escapeHtml(wo.title)}<small>${when}${escapeHtml(wo.desc)}</small></div>
-    <button class="btn ${isNext ? 'primary' : ''} go" data-go="${wo.key}">${isNext ? 'Start' : 'Go'}</button>
+    <button class="btn ${isNext ? 'primary' : ''} go" data-go="${wo.key}">View</button>
   </div>`;
 }
 
@@ -510,7 +586,7 @@ function renderPlan() {
     html += `<div class="card next-card"><div class="eyebrow">Up next${n.date ? ' · ' + shortDate(n.date) : ''}</div>
       <h2>${escapeHtml(n.title)}</h2><p class="muted small">${escapeHtml(n.desc)}</p>
       ${segmentStrip(n.segments)}
-      <button class="btn primary" data-go="${n.key}">Start workout</button></div>`;
+      <div class="btn-row"><button class="btn ghost" data-go="${n.key}">Details</button><button class="btn primary" data-start="${n.key}">Start workout</button></div></div>`;
   } else {
     html += `<div class="card"><h2>Week done ✓</h2><p class="muted small">All of this week's runs are complete. Rest up: next week unlocks on Monday.</p></div>`;
   }
@@ -545,8 +621,9 @@ function segmentStrip(segs) {
 }
 
 $('planRoot').addEventListener('click', e => {
-  const t = e.target.closest('[data-toggle]'), g = e.target.closest('[data-go]');
+  const t = e.target.closest('[data-toggle]'), g = e.target.closest('[data-go]'), st = e.target.closest('[data-start]');
   const b = currentPlan(); if (!b) return;
+  if (st) { if (session) return toast('Finish your current run first'); const wo = findWorkout(st.dataset.start); if (wo) startRun(wo); return; }
   const all = b.weeks.flatMap(w => w.workouts);
   if (t) {
     const k = t.dataset.toggle;
@@ -558,17 +635,13 @@ $('planRoot').addEventListener('click', e => {
     savePlan(); renderPlan(); updatePlanButton();
   }
   if (g) {
-    if (session) return toast('Finish your current run first');
-    const wo = all.find(x => x.key === g.dataset.go); if (wo) startRun(wo);
+    openWorkout(g.dataset.go);
   }
 });
 
 function updatePlanButton() {
   const btn = $('btnStartPlan');
-  if (!profile) { btn.textContent = 'Build my personal plan'; btn.disabled = false; return; }
-  const n = nextPlanWorkout();
-  btn.textContent = n ? `Start: ${n.title}` : 'View your plan';
-  btn.disabled = false;
+  btn.classList.toggle('hidden', !!profile);
 }
 
 /* ---------- Plan setup wizard ---------- */
@@ -704,7 +777,7 @@ $('wizNext').addEventListener('click', () => {
   profile = Planner.createProfile(wizAnswers(), new Date(), prev);
   adapt = Planner.freshAdapt(adapt, profile, planDone);
   adapt.log.unshift({ date: Planner.ymd(new Date()), msg: `${prev ? 'Plan updated' : 'Plan created'}: ${Planner.GOALS[profile.goal].label.toLowerCase()}.` });
-  savePlan(); $('planDlg').close(); renderPlan(); updatePlanButton();
+  savePlan(); $('planDlg').close(); renderPlan(); updatePlanButton(); renderHome();
   toast(prev ? 'Plan updated ✓' : 'Your plan is ready! 🏃', 3000);
 });
 $('wizBack').addEventListener('click', () => {
@@ -720,6 +793,7 @@ function renderHistory() {
   const totalM = runs.reduce((a, r) => a + r.distM, 0);
   $('totDist').textContent = `${(totalM / unitM()).toFixed(1)} ${u}`;
   $('totRuns').textContent = runs.length;
+  $('predCard').innerHTML = predictionHtml();
   const b = bestStats();
   $('bestPace').textContent = isFinite(b.bestPace) ? `${fmtPace(b.bestPace * unitM())} /${u}` : '–';
   $('longest').textContent = b.longest ? `${fmtDist(b.longest)} ${u}` : '–';
@@ -749,7 +823,7 @@ function renderHistory() {
   $('runList').innerHTML = runs.length ? runs.map(r => {
     const d = new Date(r.date);
     const pace = r.distM > 50 ? `${fmtPace(r.dur / (r.distM / unitM()))} /${u}` : '';
-    return `<div class="run-item">
+    return `<div class="run-item" data-run="${r.id}">
       <div class="feel-e">${r.feel ? FEEL[r.feel] : '🏃'}</div>
       <div class="main"><div class="t">${fmtDist(r.distM)} ${u} · ${fmtTime(r.dur)}</div>
       <div class="s">${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}${pace ? ' · ' + pace : ''}${r.plan ? ' · ' + escapeHtml(r.planTitle || 'plan') : ''}${r.manual ? ' · manual' : ''}</div>
@@ -780,7 +854,8 @@ function drawWeekChart(vals, goal) {
 }
 
 $('runList').addEventListener('click', async e => {
-  const b = e.target.closest('[data-del]'); if (!b) return;
+  const b = e.target.closest('[data-del]');
+  if (!b) { const it = e.target.closest('[data-run]'); if (it) openRunDetail(it.dataset.run); return; }
   if (!(await ask('Delete this run?', 'Delete'))) return;
   const id = b.dataset.del;
   runs = runs.filter(r => r.id !== id); saveRuns();
@@ -844,6 +919,224 @@ $('btnPause').addEventListener('click', togglePause);
 $('btnStop').addEventListener('click', async () => { if (await ask('Finish this run?', 'Finish', 'Keep going')) finishRun(); });
 window.addEventListener('beforeunload', e => { if (session) { session.savedAt = Date.now(); LS.set('active', session); e.preventDefault(); e.returnValue = ''; } });
 
+/* ---------- Workout presentation ---------- */
+const KIND_LABEL = { easy: 'Easy run', long: 'Long run', tempo: 'Tempo', intervals: 'Intervals', steady: 'Race pace', fartlek: 'Fartlek', race: 'Race day', sharpener: 'Sharpener', runwalk: 'Run/walk' };
+const KIND_CLASS = { easy: 'easy', long: 'easy', runwalk: 'easy', tempo: 'run', intervals: 'run', steady: 'run', fartlek: 'run', race: 'run', sharpener: 'run' };
+const todayStr = () => Planner.ymd(new Date());
+
+function woEstimate(wo) {
+  const s = Planner.summary(wo, profile);
+  return `≈ ${Math.round(s.sec / 60)} min · ${(s.m / unitM()).toFixed(1)} ${unitShort()}`;
+}
+function intensityChart(wo, tall) {
+  const segs = Planner.summary(wo, profile).segs;
+  return `<div class="ichart ${tall ? 'tall' : ''}" aria-hidden="true">${segs.map(s =>
+    `<i class="${BANNER_CLASS[s.type] || 'walk'}" style="flex:${s.sec.toFixed(0)};height:${(Planner.INTENSITY[s.type] || 2) * 20}%"></i>`).join('')}</div>`;
+}
+const sameSeg = (a, b) => a && b && a[0] === b[0] && a[1] === b[1] && (a[2] || 's') === (b[2] || 's');
+function groupSteps(segs) {
+  const out = []; let i = 0;
+  while (i < segs.length) {
+    if (i + 3 < segs.length && sameSeg(segs[i], segs[i + 2]) && sameSeg(segs[i + 1], segs[i + 3])) {
+      let k = 1; while (sameSeg(segs[i + 2 * k], segs[i]) && sameSeg(segs[i + 2 * k + 1], segs[i + 1])) k++;
+      let reps = k, take = 2 * k;
+      if (sameSeg(segs[i + take], segs[i])) { reps++; take++; } // last rep without recovery
+      out.push({ reps, steps: [segs[i], segs[i + 1]] }); i += take;
+    } else { out.push({ reps: 1, steps: [segs[i]] }); i++; }
+  }
+  return out;
+}
+function stepLine(s) {
+  const g = { type: s[0], amt: s[1], unit: s[2] || 's' };
+  const tgt = g.type !== 'recover' && paceRange(g.type);
+  return `<div class="step"><i class="${BANNER_CLASS[g.type] || 'walk'}"></i><div><b>${SEG_NAME[g.type]} · ${amountShort(g)}</b>
+    <small>${tgt ? 'Target ' + tgt : escapeHtml(Planner.EFFORT[g.type] || 'easy')}</small></div></div>`;
+}
+function stepsList(wo) {
+  return groupSteps(wo.segments).map(gr => gr.reps > 1
+    ? `<div class="step-group"><div class="reps">${gr.reps} ×</div>${gr.steps.map(stepLine).join('')}</div>`
+    : stepLine(gr.steps[0])).join('');
+}
+function allWorkouts() { const b = currentPlan(); return b ? b.weeks.flatMap(w => w.workouts) : []; }
+function findWorkout(key) { return allWorkouts().find(w => w.key === key); }
+
+/* ---------- Workout detail sheet ---------- */
+function openWorkout(key) {
+  const wo = findWorkout(key); if (!wo) return;
+  const st = planDone[key], done = st && st !== 'skip', skipped = st === 'skip';
+  const run = done ? runs.find(r => r.id === st) : null;
+  let moveHtml = '';
+  if (!done && wo.date) {
+    const mon = Planner.mondayOf(new Date(wo.date + 'T12:00')), t = todayStr();
+    moveHtml = `<div class="q">Move to another day</div><div class="chips">${[0, 1, 2, 3, 4, 5, 6].map(i => {
+      const d = Planner.addDays(mon, i);
+      return `<label class="chip"><input type="radio" name="moveDay" value="${d}" ${d === wo.date ? 'checked' : ''} ${d < t ? 'disabled' : ''}><span>${Planner.DAY_NAMES[i]}</span></label>`;
+    }).join('')}</div>`;
+  }
+  $('woBody').innerHTML = `
+    <div class="sheet-head"><span class="kind ${KIND_CLASS[wo.kind] || 'easy'}">${KIND_LABEL[wo.kind] || 'Run'}</span>
+      <span class="muted small">${wo.date ? shortDate(wo.date) : ''}</span></div>
+    <h2>${escapeHtml(wo.title)}</h2>
+    <p class="muted small">${woEstimate(wo)}</p>
+    ${intensityChart(wo, true)}
+    <p class="muted">${escapeHtml(wo.desc)}</p>
+    <div class="steps-list">${stepsList(wo)}</div>
+    ${run ? `<div class="done-box">✓ Completed: ${fmtDist(run.distM)} ${unitShort()} in ${fmtTime(run.dur)}${run.steps ? ` · ${scoreText(run.steps)}` : ''}</div>` : ''}
+    ${skipped ? '<div class="done-box muted">Skipped</div>' : ''}
+    ${moveHtml}
+    <div class="btn-row">
+      <button class="btn ghost" type="button" id="woClose">Close</button>
+      ${done ? '' : `<button class="btn ghost" type="button" id="woSkip">${skipped ? 'Unskip' : 'Skip'}</button>`}
+      ${done || skipped ? '' : '<button class="btn primary" type="button" id="woStart">Start</button>'}
+    </div>`;
+  $('woClose').onclick = () => $('woDlg').close();
+  const sk = $('woSkip'); if (sk) sk.onclick = () => {
+    if (skipped) delete planDone[key]; else planDone[key] = 'skip';
+    savePlan(); $('woDlg').close(); refreshPlanViews(); toast(skipped ? 'Workout restored' : 'Workout skipped');
+  };
+  const sb = $('woStart'); if (sb) sb.onclick = () => { $('woDlg').close(); if (session) return toast('Finish your current run first'); startRun(wo); };
+  $('woBody').querySelectorAll('input[name=moveDay]').forEach(inp => inp.onchange = () => {
+    adapt.moves = adapt.moves || {}; adapt.moves[key] = inp.value; savePlan(); refreshPlanViews();
+    toast(`Moved to ${shortDate(inp.value)}`); openWorkout(key);
+  });
+  if (!$('woDlg').open) $('woDlg').showModal();
+}
+function refreshPlanViews() { renderHome(); if ($('view-plan').classList.contains('active')) renderPlan(); updatePlanButton(); }
+
+/* ---------- Home: this week ---------- */
+let homeSel = null;
+function renderHome() {
+  const el = $('homePanel'); if (!el) return;
+  if (session) { el.innerHTML = ''; return; }
+  if (!profile) {
+    el.innerHTML = `<div class="card hero-card"><div class="eyebrow">Get started</div><h2>Train with a plan made for you</h2>
+      <p class="muted">Pick a goal, tell Stride where your fitness is now, and get guided workouts with target paces and voice coaching that adapt as you go.</p></div>`;
+    return;
+  }
+  const b = currentPlan(), t = todayStr();
+  const mon = Planner.mondayOf(new Date()), days = [0, 1, 2, 3, 4, 5, 6].map(i => Planner.addDays(mon, i));
+  const byDay = {}; b.weeks.flatMap(w => w.workouts).forEach(wo => { if (wo.date && days.includes(wo.date)) (byDay[wo.date] = byDay[wo.date] || []).push(wo); });
+  if (!homeSel || !days.includes(homeSel)) homeSel = t;
+
+  const strip = days.map((d, i) => {
+    const wos = byDay[d] || [], wo = wos[0];
+    const st = wo && planDone[wo.key];
+    const cls = ['day-pill', d === t ? 'today' : '', d === homeSel ? 'sel' : '', wo ? 'has' : ''].join(' ');
+    const mark = !wo ? '' : st === 'skip' ? '<em class="skip">–</em>' : st ? '<em class="ok">✓</em>' : `<em class="dot ${KIND_CLASS[wo.kind] || 'easy'}"></em>`;
+    return `<button class="${cls}" data-day="${d}"><span>${Planner.DAY_NAMES[i][0]}</span><b>${+d.slice(8)}</b>${mark}</button>`;
+  }).join('');
+
+  // Week totals
+  const weekWos = Object.values(byDay).flat();
+  const plannedM = weekWos.reduce((a, wo) => a + Planner.summary(wo, profile).m, 0);
+  const doneM = runs.filter(r => Planner.ymd(new Date(r.date)) >= mon).reduce((a, r) => a + r.distM, 0);
+  const doneN = weekWos.filter(wo => planDone[wo.key] && planDone[wo.key] !== 'skip').length;
+
+  const sel = (byDay[homeSel] || [])[0];
+  let card;
+  if (sel) {
+    const st = planDone[sel.key], run = st && st !== 'skip' ? runs.find(r => r.id === st) : null;
+    card = `<div class="card today-card">
+      <div class="sheet-head"><span class="kind ${KIND_CLASS[sel.kind] || 'easy'}">${KIND_LABEL[sel.kind] || 'Run'}</span>
+        <span class="muted small">${homeSel === t ? 'Today' : shortDate(homeSel)}</span></div>
+      <h2>${escapeHtml(sel.title)}</h2>
+      <p class="muted small">${woEstimate(sel)}</p>
+      ${intensityChart(sel)}
+      ${run ? `<div class="done-box">✓ Done: ${fmtDist(run.distM)} ${unitShort()} in ${fmtTime(run.dur)}${run.steps ? ' · ' + scoreText(run.steps) : ''}</div>` : ''}
+      ${st === 'skip' ? '<div class="done-box muted">Skipped</div>' : ''}
+      <div class="btn-row">
+        <button class="btn ghost" data-detail="${sel.key}">Details</button>
+        ${st ? '' : `<button class="btn primary" data-start="${sel.key}">Start workout</button>`}
+      </div></div>`;
+  } else {
+    const upcoming = b.weeks.flatMap(w => w.workouts).find(wo => wo.date && wo.date > homeSel && !planDone[wo.key]);
+    card = `<div class="card today-card rest"><div class="eyebrow">${homeSel === t ? 'Today' : shortDate(homeSel)}</div>
+      <h2>Rest day</h2><p class="muted small">Recovery is where you get fitter. A walk or gentle stretch is perfect.</p>
+      ${upcoming ? `<button class="next-link" data-detail="${upcoming.key}">Next: <b>${escapeHtml(upcoming.title)}</b> · ${shortDate(upcoming.date)} ›</button>` : ''}</div>`;
+  }
+  const status = b.phase === 'beginner' ? `Run/walk week ${b.current + 1} of ${b.total}` : `Week ${b.current + 1} of ${b.total}`;
+  el.innerHTML = `
+    <div class="week-head-row"><div><div class="eyebrow">${escapeHtml(Planner.GOALS[profile.goal].label)}</div><h2>This week</h2></div>
+      <span class="muted small">${status}</span></div>
+    <div class="week-strip">${strip}</div>
+    ${card}
+    <div class="week-total"><div><b>${(doneM / unitM()).toFixed(1)}</b> / ${(plannedM / unitM()).toFixed(1)} ${unitShort()} planned</div>
+      <div class="muted small">${doneN} of ${weekWos.length} workouts done</div></div>
+    <div class="progress-wrap"><div class="progress" style="width:${Math.min(100, 100 * doneM / Math.max(1, plannedM))}%"></div></div>`;
+}
+$('homePanel').addEventListener('click', e => {
+  const d = e.target.closest('[data-day]'), s = e.target.closest('[data-start]'), det = e.target.closest('[data-detail]');
+  if (d) { homeSel = d.dataset.day; renderHome(); }
+  if (det) openWorkout(det.dataset.detail);
+  if (s) { const wo = findWorkout(s.dataset.start); if (wo) startRun(wo); }
+});
+
+/* ---------- Run analysis ---------- */
+function gradeSteps(steps) {
+  return (steps || []).filter(s => s.tgt && s.gps && s.m >= 100 && !s.partial).map(s => {
+    const pace = s.sec / (s.m / 1000);
+    const status = pace > s.tgt[1] * 1.03 ? 'slow' : pace < s.tgt[0] * 0.97 ? 'fast' : 'on';
+    return { ...s, pace, status };
+  });
+}
+function scoreText(steps) {
+  const g = gradeSteps(steps); if (!g.length) return '';
+  return `${g.filter(x => x.status === 'on').length}/${g.length} steps on target`;
+}
+function analysisHtml(steps) {
+  const g = gradeSteps(steps); if (!g.length) return '';
+  const k = unitM() / 1000;
+  const on = g.filter(x => x.status === 'on').length;
+  return `<div class="analysis"><div class="q">Workout analysis · ${on}/${g.length} on target</div>${g.map(x => `
+    <div class="an-row ${x.status}"><span>${SEG_NAME[x.type]} · ${amountShort(x)}</span>
+      <span><b>${fmtPace(x.pace * k)}</b> <small>vs ${fmtPace(x.tgt[0] * k)}–${fmtPace(x.tgt[1] * k)}</small></span>
+      <em>${x.status === 'on' ? '✓' : x.status === 'fast' ? 'fast' : 'slow'}</em></div>`).join('')}
+    <p class="muted small">${on === g.length ? 'Perfect pacing. Every step on target!' : on >= g.length / 2 ? 'Good pacing. Aim for even effort on every rep.' : 'Pacing was off target. Try starting each step more steadily.'}</p></div>`;
+}
+
+/* ---------- Run detail ---------- */
+function openRunDetail(id) {
+  const r = runs.find(x => x.id === id); if (!r) return;
+  const pace = r.distM > 50 ? fmtPace(r.dur / (r.distM / unitM())) : '–';
+  $('runBody').innerHTML = `
+    <div class="eyebrow">${new Date(r.date).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+    <h2>${r.feel ? FEEL[r.feel] + ' ' : ''}${escapeHtml(r.planTitle || (r.manual ? 'Logged run' : 'Free run'))}</h2>
+    <div class="summary-grid">
+      <div><b>${fmtDist(r.distM)}</b><span>${unitLong()}</span></div><div><b>${fmtTime(r.dur)}</b><span>time</span></div>
+      <div><b>${pace}</b><span>avg pace /${unitShort()}</span></div><div><b>${r.splits && r.splits.length ? fmtPace(Math.min(...r.splits)) : '–'}</b><span>fastest split</span></div>
+    </div>
+    ${r.route && r.route.length > 1 ? '<svg id="runRoute" class="route" viewBox="0 0 300 160" style="margin-top:12px"></svg>' : ''}
+    ${r.splits && r.splits.length ? `<div class="splits">${r.splits.map((s, i) => `<div><span>${unitShort()} ${i + 1}</span><span>${fmtPace(s)} /${unitShort()}</span></div>`).join('')}</div>` : ''}
+    ${analysisHtml(r.steps)}
+    ${r.notes ? `<p class="muted">${escapeHtml(r.notes)}</p>` : ''}`;
+  if (r.route && r.route.length > 1) drawRoute($('runRoute'), r.route);
+  $('runDlg').showModal();
+}
+$('runClose').addEventListener('click', () => $('runDlg').close());
+
+/* ---------- Race prediction trend ---------- */
+function predictionHtml() {
+  if (!profile || !adapt || !(adapt.fitHist || []).length) return '';
+  const goalKm = Planner.GOALS[profile.goal].dist;
+  const label = { start: '5K', '5k': '5K', '10k': '10K', half: 'Half marathon', marathon: 'Marathon', fitness: '5K' }[profile.goal];
+  const pts = adapt.fitHist.map(h => ({ date: h.date, t: Planner.riegel(h.t5, 5, goalKm) }));
+  const cur = pts[pts.length - 1].t, first = pts[0].t, diff = Math.round(first - cur);
+  let chart = '';
+  if (pts.length > 1) {
+    const W = 300, H = 110, pad = 14, min = Math.min(...pts.map(p => p.t)), max = Math.max(...pts.map(p => p.t)), span = Math.max(1, max - min);
+    const xy = (p, i) => [pad + i * (W - 2 * pad) / (pts.length - 1), pad + (p.t - min) / span * (H - 2 * pad)]; // faster = higher
+    const path = pts.map((p, i) => (i ? 'L' : 'M') + xy(p, i).map(n => n.toFixed(1)).join(' ')).join('');
+    const [lx, ly] = xy(pts[pts.length - 1], pts.length - 1);
+    chart = `<svg viewBox="0 0 ${W} ${H}" class="chart"><path d="${path}" fill="none" stroke="#ff5a36" stroke-width="2.5" stroke-linejoin="round"/>
+      <circle cx="${lx}" cy="${ly}" r="5" fill="#ff5a36"/>
+      <text x="${pad}" y="${H - 2}" fill="#9aa0ab" font-size="10">${shortDate(pts[0].date)}</text>
+      <text x="${W - pad}" y="${H - 2}" text-anchor="end" fill="#9aa0ab" font-size="10">now</text></svg>`;
+  }
+  return `<div class="card"><div class="eyebrow">Race prediction</div>
+    <div class="pred"><b>${Planner.mmss(cur)}</b><span>${label}</span></div>
+    <p class="muted small">${diff > 0 ? `${Planner.mmss(diff)} faster since you started 🚀` : 'Updates automatically as your runs show improvement.'}</p>${chart}</div>`;
+}
+
 /* ---------- Boot ---------- */
 loadSettingsUi();
 if (profile) {
@@ -851,6 +1144,7 @@ if (profile) {
   if (brk) { savePlan(); setTimeout(() => toast(brk, 6000), 800); }
 }
 updatePlanButton();
+renderHome();
 drawRoute($('routeSvg'), []);
 
 // Recover a run interrupted by the phone closing the tab
@@ -860,7 +1154,7 @@ if (saved && saved.startedAt) {
   ask('You have an unfinished run. Continue it?', 'Continue run', 'Save it as is').then(cont => { if (cont) {
     session = saved; session.last = null;
     startGps(); tickTimer = setInterval(tick, 500);
-    $('controlsIdle').classList.add('hidden'); $('controlsActive').classList.remove('hidden');
+    $('controlsIdle').classList.add('hidden'); $('controlsActive').classList.remove('hidden'); $('liveStats').classList.remove('hidden'); renderHome();
     $('btnPause').textContent = 'Resume';
     $('workoutBanner').classList.toggle('hidden', !session.workout);
     tick(); toast('Run restored (paused). Tap Resume.');

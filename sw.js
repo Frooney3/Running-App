@@ -1,4 +1,4 @@
-const CACHE = 'stride-v2';
+const CACHE = 'stride-v3';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './plan.js', './planner.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
